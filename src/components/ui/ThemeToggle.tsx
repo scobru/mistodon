@@ -8,7 +8,7 @@ export const ThemeToggle: React.FC = () => {
   // Initialize theme state from localStorage
   const [currentTheme, setCurrentTheme] = useState<Theme>(() => {
     const savedTheme = localStorage.getItem('theme');
-    return (savedTheme && themes.includes(savedTheme as Theme)) ? (savedTheme as Theme) : "light";
+    return (savedTheme && themes.includes(savedTheme as Theme)) ? (savedTheme as Theme) : "dark";
   });
 
   // Update theme in localStorage and apply to document

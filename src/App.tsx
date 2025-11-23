@@ -42,13 +42,6 @@ declare global {
     };
     gun?: any;
     shogun?: ShogunCore;
-    sitesData?: any[];
-    sites?: string[];
-    ringName?: string;
-    ringID?: string;
-    useIndex?: boolean;
-    indexPage?: string;
-    useRandom?: boolean;
   }
 }
 
@@ -130,8 +123,45 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         {children}
       </main>
 
-      {/* Onion widget anchor */}
-      <div id="shogun-ring"></div>
+      <footer className="w-full py-5 px-1 mt-auto">
+        <div className="w-full">
+          <ul className="menu menu-horizontal w-full">
+            <div className="flex justify-center items-center gap-2 text-sm w-full">
+              <div className="text-center">
+                <a href="https://github.com/scobru/shogun-mistodon" target="_blank" rel="noreferrer" className="link">
+                  Fork me
+                </a>
+              </div>
+              <span>·</span>
+              <div className="flex justify-center items-center gap-2">
+                <p className="m-0 text-center">
+                  Built with 
+                  <svg xmlns="http://www.w3.org/2000/svg" className="inline-block h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                  </svg>
+                  at
+                </p>
+                <a
+                  className="flex justify-center items-center gap-1"
+                  href="https://shogun-eco.xyz/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <span className="link">Shogun Ecosystem</span>
+                </a>
+                <span>·</span>
+                <span className="text-center">by <a href="https://github.com/scobru" target="_blank" rel="noreferrer" className="link">scobru</a></span>
+              </div>
+              <span>·</span>
+              <div className="text-center">
+                <a href="https://t.me/shogun_eco" target="_blank" rel="noreferrer" className="link">
+                  Support
+                </a>
+              </div>
+            </div>
+          </ul>
+        </div>
+      </footer>
     </div>
   );
 };
@@ -320,73 +350,6 @@ function App() {
     initShogun();
   }, [relays, isLoadingRelays]);
 
-  // Mount Shogun Onion widget (Onion ring) once, after main app is ready
-  useEffect(() => {
-    // Wait until SDK is initialized so the main layout (and #shogun-ring) is rendered
-    if (!sdk) return;
-
-    (async () => {
-      if (typeof window === "undefined" || typeof document === "undefined") {
-        return;
-      }
-
-      try {
-        // Ensure Onion CSS from CDN is present
-        const ensureOnionCss = () => {
-          const existing = document.getElementById("shogun-onion-css");
-          if (existing) return;
-          const link = document.createElement("link");
-          link.id = "shogun-onion-css";
-          link.rel = "stylesheet";
-          link.href = "https://unpkg.com/shogun-onion@0.1.16/onion.css";
-          document.head.appendChild(link);
-        };
-
-        ensureOnionCss();
-
-        // Import only sitesData to avoid touching package entry that references CSS assets
-        const { default: sitesData } = await import(
-          "shogun-onion/sitesData.js"
-        );
-
-        // Expose globals expected by the onion widget script
-        window.sitesData = sitesData;
-        window.sites = sitesData.map((s: any) => s.url);
-        window.ringName = "Shogun Network";
-        window.ringID = "shogun-ring";
-        window.useIndex = true;
-        window.indexPage = "#";
-        window.useRandom = true;
-
-        // Ensure anchor exists; if not, create a fallback at the end of body
-        if (!document.getElementById("shogun-ring")) {
-          const anchor = document.createElement("div");
-          anchor.id = "shogun-ring";
-          document.body.appendChild(anchor);
-        }
-
-        // Inject the widget script if not already added
-        await new Promise<void>((resolve, reject) => {
-          if (
-            document.querySelector('script[data-shogun-onion-widget="true"]')
-          ) {
-            resolve();
-            return;
-          }
-          const script = document.createElement("script");
-          script.src =
-            "https://unpkg.com/shogun-onion@0.1.16/ring/onionring-widget.js";
-          script.async = true;
-          script.setAttribute("data-shogun-onion-widget", "true");
-          script.onload = () => resolve();
-          script.onerror = (e) => reject(e);
-          document.body.appendChild(script);
-        });
-      } catch (e) {
-        console.error("Failed to mount Shogun Onion widget:", e);
-      }
-    })();
-  }, [sdk]);
 
   if (isLoadingRelays || !sdk) {
     return (

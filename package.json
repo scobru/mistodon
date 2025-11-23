@@ -38,11 +38,10 @@
     "react-router-dom": "^7.6.2",
     "shogun-button-react": "^6.4.4",
     "shogun-core": "^6.4.4",
-    "shogun-onion": "^0.1.16",
     "shogun-relays": "^1.0.8",
-    "shogun-theme": "^1.0.3",
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^11.1.0",
+    "vercel": "^48.10.10",
     "vite-plugin-node-polyfills": "^0.24.0"
   },
   "devDependencies": {

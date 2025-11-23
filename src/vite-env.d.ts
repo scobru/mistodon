@@ -5,8 +5,3 @@ declare module '*.svg' {
   export default content;
 }
 
-declare module 'shogun-onion/sitesData.js' {
-  const sitesData: Array<{ url: string; [key: string]: any }>;
-  export default sitesData;
-}
-
