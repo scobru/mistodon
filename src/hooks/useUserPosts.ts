@@ -44,23 +44,24 @@ export function useUserPosts(userPub: string): UseUserPostsReturn {
 
     console.log('Loading posts for user:', userPub, 'isCurrentUser:', isCurrentUser);
 
-    // Listen for user's post indices
-    const mainListener = userPostsNode.map().on((data: any, key: string) => {
+    // Listen for user's post indices (content-addressed - contains hash/soul)
+    userPostsNode.map().on((data: any, hash: string) => {
       // Skip if already processed
-      if (processedPosts.has(key)) {
+      if (processedPosts.has(hash)) {
         return;
       }
       
-      if (!data || !key || typeof data !== 'object') {
+      if (!data || !hash || typeof data !== 'object') {
         return;
       }
 
-      if (key.startsWith('_')) {
+      if (hash.startsWith('_')) {
         return;
       }
 
-      // Get the actual post data
-      const postId = data.id || key;
+      // Get the soul from the entry (content-addressed storage)
+      const postSoul = data.soul || hash;
+      const postId = hash; // Use hash as postId
       
       // Check if this is a repost (data has reposted: true)
       const isRepost = data.reposted === true;
@@ -78,8 +79,8 @@ export function useUserPosts(userPub: string): UseUserPostsReturn {
       processedPosts.add(postId);
       console.log('Found post index:', postId, 'for user:', userPub, 'isRepost:', isRepost);
 
-      // Use once() to get complete post data, then on() for updates
-      gun.get('posts').get(postId).once((postData: any) => {
+      // Get the actual post data using the soul (content-addressed)
+      gun.get(postSoul).once((postData: any) => {
         // Double-check: skip if already in map (race condition protection)
         if (postsMap.has(postId)) {
           return;
@@ -92,25 +93,12 @@ export function useUserPosts(userPub: string): UseUserPostsReturn {
 
         const { _, ...postPostData } = postData;
 
-        // Extract timestamp from ID if missing
-        let postTimestamp = postPostData.timestamp || data.timestamp;
-        if (!postTimestamp && postId) {
-          const idParts = postId.split('_');
-          if (idParts.length >= 2 && idParts[0] === 'post') {
-            const extractedTimestamp = parseInt(idParts[1]);
-            if (!isNaN(extractedTimestamp)) {
-              postTimestamp = extractedTimestamp;
-            }
-          }
-        }
-        if (!postTimestamp) {
-          postTimestamp = Date.now();
-        }
+        // Get timestamp from post data or entry
+        let postTimestamp = postPostData.timestamp || data.timestamp || Date.now();
 
-        // Validate post structure
-        // Support both old format (author/content) and new format (authorPub/text)
-        const postAuthor = postPostData.author || postPostData.authorPub;
-        const postContent = postPostData.content || postPostData.text;
+        // Validate post structure (content-addressed format uses authorPub/text)
+        const postAuthor = postPostData.authorPub || postPostData.author || userPub;
+        const postContent = postPostData.text || postPostData.content;
         
         if (postAuthor && postContent) {
           // Include post if:
@@ -162,32 +150,20 @@ export function useUserPosts(userPub: string): UseUserPostsReturn {
       // Track if this is a repost
       const isRepostFromIndex = data.reposted === true;
       
-      // Also listen for updates
-      const updateListener = gun.get('posts').get(postId).on((postData: any) => {
+      // Also listen for updates (using soul for content-addressed posts)
+      const updateListener = gun.get(postSoul).on((postData: any) => {
         if (!postData || typeof postData !== 'object' || postData._) {
           return;
         }
 
         const { _, ...postPostData } = postData;
 
-        // Extract timestamp from ID if missing
-        let postTimestamp = postPostData.timestamp;
-        if (!postTimestamp && postId) {
-          const idParts = postId.split('_');
-          if (idParts.length >= 2 && idParts[0] === 'post') {
-            const extractedTimestamp = parseInt(idParts[1]);
-            if (!isNaN(extractedTimestamp)) {
-              postTimestamp = extractedTimestamp;
-            }
-          }
-        }
-        if (!postTimestamp) {
-          postTimestamp = Date.now();
-        }
+        // Get timestamp from post data
+        let postTimestamp = postPostData.timestamp || Date.now();
 
-        // Support both old format (author/content) and new format (authorPub/text)
-        const postAuthor = postPostData.author || postPostData.authorPub;
-        const postContent = postPostData.content || postPostData.text;
+        // Content-addressed format uses authorPub/text
+        const postAuthor = postPostData.authorPub || postPostData.author || userPub;
+        const postContent = postPostData.text || postPostData.content;
         
         if (postAuthor && postContent) {
           // Check if post is still in user's posts (could be original or repost)
@@ -248,13 +224,8 @@ export function useUserPosts(userPub: string): UseUserPostsReturn {
         // Clean up main listener
         userPostsNode.map().off();
         // Clean up individual post listeners
-        listeners.forEach((listener, postId) => {
-          try {
-            gun.get('posts').get(postId).off();
-          } catch (e) {
-            console.error(`Error cleaning up listener for post ${postId}:`, e);
-          }
-        });
+        // Cleanup is handled by the main listener
+        // Individual post listeners use souls which are managed by GunDB
         listeners.clear();
       } catch (e) {
         console.error('Error cleaning up user posts listeners:', e);

@@ -7,11 +7,12 @@ import { useReplies } from '../hooks/useReplies';
 import type { Post } from '../utils/postUtils';
 
 export const PostDetail: React.FC = () => {
-  const { postId } = useParams<{ postId: string }>();
+  const { postId: rawPostId } = useParams<{ postId: string }>();
+  const postId = rawPostId ? decodeURIComponent(rawPostId) : undefined;
   const navigate = useNavigate();
   const { sdk, core } = useShogun();
   const shogunCore = sdk || core;
-  const { socialNetwork, isReady } = useSocialProtocol();
+  const { socialNetwork, isReady, getPostAuthor } = useSocialProtocol();
   const [post, setPost] = useState<Post | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,34 +36,58 @@ export const PostDetail: React.FC = () => {
     setError(null);
 
     const gun = shogunCore.gun;
+    const appName = 'shogun-mistodon-clone-v1';
     let found = false;
 
-    // Try to get post from global posts node
-    const postNode = gun.get('posts').get(postId);
-    
-    const listener = postNode.on((data: any) => {
-      if (data && typeof data === 'object' && !found) {
-        const { _, ...postData } = data;
-        
-        // Check if we have valid post data
-        if (postData.id || postData.content || postData.text) {
-          found = true;
+    const loadPostFromSoul = (postSoul: string) => {
+      if (!postSoul || typeof postSoul !== 'string' || found) return;
+      
+      found = true;
+      
+      // Get the actual post data using the soul
+      gun.get(postSoul).once((postData: any) => {
+        if (postData && typeof postData === 'object') {
+          const { _, ...cleanPostData } = postData;
           
-          // Convert to Post format
+          // Convert to Post format (content-addressed uses authorPub/text)
           const post: Post = {
-            id: postData.id || postId,
-            author: postData.author || postData.authorPub || '',
-            content: postData.content || postData.text || '',
-            timestamp: postData.timestamp || Date.now(),
-            likes: postData.likes || {},
-            reposts: postData.reposts || {},
-            replyTo: postData.replyTo || undefined,
-            media: postData.media || undefined,
+            id: postId, // Use hash as ID
+            author: cleanPostData.authorPub || cleanPostData.author || '',
+            content: cleanPostData.text || cleanPostData.content || '',
+            timestamp: cleanPostData.timestamp || Date.now(),
+            likes: cleanPostData.likes || {},
+            reposts: cleanPostData.reposts || {},
+            replyTo: cleanPostData.replyTo || undefined,
+            media: cleanPostData.media || undefined,
           };
 
-          // Get author profile
-          if (post.author) {
-            socialNetwork.getUserProfile(post.author, (profile) => {
+          // Get likes/reposts from interactions node (posts are immutable)
+          const likesNode = gun.get(appName).get('posts').get(postId).get('likes');
+          const repostsNode = gun.get(appName).get('posts').get(postId).get('reposts');
+          
+          // Load likes
+          const likes: Record<string, boolean> = {};
+          likesNode.map().once((likeValue: any, likeKey: string) => {
+            if (likeKey && !likeKey.startsWith('_') && (likeValue === true || (likeValue && typeof likeValue === 'object' && !likeValue._))) {
+              likes[likeKey] = true;
+            }
+          });
+          
+          // Load reposts
+          const reposts: Record<string, boolean> = {};
+          repostsNode.map().once((repostValue: any, repostKey: string) => {
+            if (repostKey && !repostKey.startsWith('_') && (repostValue && typeof repostValue === 'object' && !repostValue._)) {
+              reposts[repostKey] = true;
+            }
+          });
+          
+          // Update post with interactions after a small delay to allow data to load
+          setTimeout(() => {
+            post.likes = likes;
+            post.reposts = reposts;
+            
+            // Use getPostAuthor (bidirectional reference) instead of getUserProfile
+            getPostAuthor(postId, (profile) => {
               setPost({
                 ...post,
                 authorProfile: {
@@ -73,31 +98,66 @@ export const PostDetail: React.FC = () => {
               });
               setLoading(false);
             });
-          } else {
-            setPost(post);
-            setLoading(false);
-          }
+          }, 100);
+        } else {
+          setError('Post data not found');
+          setLoading(false);
         }
+      });
+    };
+
+    // Method 1: Try to get post from content-addressed storage (#posts)
+    const hashNode = gun.get('#posts').get(postId);
+    hashNode.on((postSoul: string) => {
+      if (postSoul && typeof postSoul === 'string') {
+        loadPostFromSoul(postSoul);
       }
     });
 
-    // Timeout after 5 seconds if post not found
+    // Method 2: Try to find in timeline (check last 7 days)
+    const today = new Date();
+    const timelineListeners: Array<() => void> = [];
+    
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      const timeKey = date.toISOString().split('T')[0];
+      
+      const timelineNode = gun.get(appName).get('timeline').get(timeKey).get(postId);
+      timelineNode.on((postSoul: string) => {
+        if (postSoul && typeof postSoul === 'string') {
+          loadPostFromSoul(postSoul);
+        }
+      });
+      
+      timelineListeners.push(() => {
+        try {
+          timelineNode.off();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      });
+    }
+
+    // Timeout after 8 seconds if post not found (more time for sync)
     const timeout = setTimeout(() => {
       if (!found) {
         setError('Post not found');
         setLoading(false);
       }
-    }, 5000);
+    }, 8000);
 
     return () => {
       clearTimeout(timeout);
       try {
-        postNode.off();
+        hashNode.off();
+        // Clean up timeline listeners
+        timelineListeners.forEach(cleanup => cleanup());
       } catch (e) {
         console.error('Error cleaning up post listener:', e);
       }
     };
-  }, [isReady, socialNetwork, postId, shogunCore]);
+  }, [isReady, socialNetwork, postId, shogunCore, getPostAuthor]);
 
   if (!isReady) {
     return (
@@ -190,70 +250,41 @@ export const PostDetail: React.FC = () => {
 };
 
 // Component to show parent post (if this is a reply)
+// Now uses the new bidirectional getParentPost method
 const ParentPost: React.FC<{ postId: string }> = ({ postId }) => {
-  const { sdk, core } = useShogun();
-  const shogunCore = sdk || core;
-  const { socialNetwork, isReady } = useSocialProtocol();
+  const { getParentPost } = useSocialProtocol();
   const [parentPost, setParentPost] = useState<Post | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isReady || !socialNetwork || !shogunCore?.gun) {
+    if (!postId) {
       setLoading(false);
       return;
     }
 
-    const gun = shogunCore.gun;
-    const postNode = gun.get('posts').get(postId);
-    
-    const listener = postNode.once((data: any) => {
-      if (data && typeof data === 'object') {
-        const { _, ...postData } = data;
-        
-        if (postData.id || postData.content || postData.text) {
-          const post: Post = {
-            id: postData.id || postId,
-            author: postData.author || postData.authorPub || '',
-            content: postData.content || postData.text || '',
-            timestamp: postData.timestamp || Date.now(),
-            likes: postData.likes || {},
-            reposts: postData.reposts || {},
-            replyTo: postData.replyTo || undefined,
-            media: postData.media || undefined,
-          };
-
-          if (post.author) {
-            socialNetwork.getUserProfile(post.author, (profile) => {
-              setParentPost({
-                ...post,
-                authorProfile: {
-                  username: profile.displayName,
-                  avatar: profile.avatarCid,
-                  bio: profile.bio,
-                },
-              });
-              setLoading(false);
-            });
-          } else {
-            setParentPost(post);
-            setLoading(false);
-          }
-        } else {
-          setLoading(false);
-        }
-      } else {
-        setLoading(false);
+    // Use the new bidirectional getParentPost method
+    getParentPost(postId, (post) => {
+      if (post) {
+        const convertedPost: Post = {
+          id: post.id,
+          author: post.authorPub || post.author || '',
+          content: post.text || post.content || '',
+          timestamp: post.timestamp || Date.now(),
+          likes: post.likes || {},
+          reposts: post.reposts || {},
+          replyTo: post.replyTo || undefined,
+          media: post.media || undefined,
+          authorProfile: post.authorProfile ? {
+            username: post.authorProfile.displayName,
+            avatar: post.authorProfile.avatarCid || undefined,
+            bio: post.authorProfile.bio,
+          } : undefined,
+        };
+        setParentPost(convertedPost);
       }
+      setLoading(false);
     });
-
-    return () => {
-      try {
-        postNode.off();
-      } catch (e) {
-        console.error('Error cleaning up parent post listener:', e);
-      }
-    };
-  }, [isReady, socialNetwork, postId, shogunCore]);
+  }, [postId, getParentPost]);
 
   if (loading) {
     return (

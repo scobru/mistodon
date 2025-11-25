@@ -90,19 +90,22 @@ export const Timeline: React.FC = () => {
   };
 
   // Convert PostWithAuthor to Post format for PostList component
+  // Filter out replies - they should only appear under their parent posts
   // Use displayedPosts instead of all posts for pagination
-  const convertedPosts = displayedPosts.map((post) => ({
-    id: post.id,
-    author: ('authorPub' in post ? post.authorPub : post.author) as string,
-    content: ('text' in post ? post.text : post.content) as string,
-    timestamp: post.timestamp,
-    likes: post.likes || {},
-    reposts: post.reposts || {},
-    replyTo: post.replyTo,
-    media: 'media' in post ? post.media : undefined,
-    // Add author profile info if available
-    authorProfile: post.authorProfile,
-  }));
+  const convertedPosts = displayedPosts
+    .filter((post) => !post.replyTo) // Only show top-level posts, not replies
+    .map((post) => ({
+      id: post.id,
+      author: ('authorPub' in post ? post.authorPub : post.author) as string,
+      content: ('text' in post ? post.text : post.content) as string,
+      timestamp: post.timestamp,
+      likes: post.likes || {},
+      reposts: post.reposts || {},
+      replyTo: post.replyTo,
+      media: 'media' in post ? post.media : undefined,
+      // Add author profile info if available
+      authorProfile: post.authorProfile,
+    }));
 
   // Conditional return must come AFTER all hooks
   if (!isReady) {

@@ -224,10 +224,12 @@ interface PostWithAuthor extends Post {
 |---------------|---------------------|-------------|
 | Timeline | Singolo nodo `posts` | Organizzata per data `timeline/YYYY-MM-DD` |
 | Profili | Caricati ogni volta | Cache locale |
-| Hashtag | Non indicizzati | Indice automatico |
-| Threading | Base | Migliorato con riferimenti |
+| Hashtag | Non indicizzati | Indice automatico + riferimenti bidirezionali |
+| Threading | Base | Migliorato con riferimenti bidirezionali |
 | User Space | Solo globale | User Space + Discovery |
 | Performance | Carica tutti i post | Carica per data (più efficiente) |
+| Riferimenti | Unidirezionali | Bidirezionali (User↔Post, Post↔Tag, Post↔Reply) |
+| Navigazione Grafo | Limitata | Completa in tutte le direzioni (GUN Design Pattern) |
 
 ## Migrazione
 
@@ -273,6 +275,110 @@ import { TimelineV2 } from './components/TimelineV2';
 
 <TimelineV2 />
 ```
+
+## Miglioramenti Basati su GUN Design Examples
+
+### Riferimenti Bidirezionali (GUN Design Pattern)
+
+Il protocollo è stato migliorato seguendo gli esempi di design di GUN per creare riferimenti bidirezionali espliciti tra le entità. Questo permette una navigazione più efficiente del grafo dei dati.
+
+#### Riferimenti Implementati
+
+1. **User ↔ Post (Bidirezionale)**
+   - `post.path('author').put(user)` - Post → Author
+   - `user.path('posts').set(post)` - User → Posts
+   - Permette di navigare da un post all'autore e da un utente ai suoi post
+
+2. **Post ↔ Tag (Bidirezionale)**
+   - `tag.path('posts').set(post)` - Tag → Posts
+   - `post.path('tags').set(tag)` - Post → Tags
+   - Permette di navigare da un tag ai post e da un post ai suoi tag
+
+3. **Post ↔ Reply (Bidirezionale)**
+   - `parentPost.path('replies').set(reply)` - Parent → Replies
+   - `reply.path('replyTo').put(parentPost)` - Reply → Parent
+   - Permette di navigare da un post alle risposte e da una risposta al post originale
+
+#### Nuovi Metodi di Navigazione
+
+```typescript
+// Ottenere tutti i post di un utente usando riferimenti bidirezionali
+const cleanup = network.getUserPosts(userPub, (post) => {
+  console.log('Post dell\'utente:', post);
+});
+
+// Ottenere tutti i tag di un post
+const cleanup = network.getPostTags(postId, (tag) => {
+  console.log('Tag del post:', tag);
+});
+
+// Ottenere tutti i post con un tag specifico
+const cleanup = network.getTagPosts('hashtag', (post) => {
+  console.log('Post con tag:', post);
+});
+
+// Ottenere l'autore di un post
+network.getPostAuthor(postId, (profile) => {
+  console.log('Autore:', profile);
+});
+
+// Ottenere il post parent di una risposta
+network.getParentPost(replyId, (post) => {
+  console.log('Post originale:', post);
+});
+```
+
+#### Utilizzo nel Frontend
+
+I metodi sono disponibili tramite l'hook `useSocialProtocol`:
+
+```typescript
+const { 
+  getPostTags,      // ✅ Usato in PostCard per mostrare i tag
+  getParentPost,    // ✅ Usato in PostDetail per mostrare il post originale
+  getTagPosts,      // ✅ Usato internamente da viewHashtag
+  getUserPosts,     // ✅ Disponibile - vedi useUserPostsBidirectional hook
+  getPostAuthor     // ✅ Usato in PostDetail e PostCard per ottenere l'autore
+} = useSocialProtocol();
+```
+
+**Utilizzo attuale**:
+- ✅ `getPostTags` - Usato in `PostCard.tsx` per mostrare i tag di ogni post
+- ✅ `getParentPost` - Usato in `PostDetail.tsx` per mostrare il post originale di una risposta
+- ✅ `getTagPosts` - Usato internamente da `viewHashtag` (ricerca hashtag usa riferimenti bidirezionali)
+- ✅ `getPostAuthor` - Usato in `PostDetail.tsx` e `PostCard.tsx` per ottenere l'autore usando riferimenti bidirezionali
+- ✅ `getUserPosts` - Disponibile tramite hook `useUserPostsBidirectional` per casi semplici (senza repost)
+
+**Hook alternativo**: `useUserPostsBidirectional`
+Per casi semplici dove non servono i repost, puoi usare:
+
+```typescript
+import { useUserPostsBidirectional } from '../hooks/useUserPostsBidirectional';
+
+// Usa i riferimenti bidirezionali per ottenere i post
+const { posts, loading } = useUserPostsBidirectional(userPub);
+```
+
+**Nota**: `viewHashtag` è stato migliorato per usare internamente `getTagPosts`, quindi ora usa i riferimenti bidirezionali automaticamente.
+
+#### Esempio di Navigazione Complessa (come negli esempi GUN)
+
+```typescript
+// Navigare il grafo: User → Posts → Tags → Posts → Comments → Authors
+const userNode = gun.user(userPub);
+userNode.path('posts').map()           // Tutti i post dell'utente
+  .path('tags').map()                  // Tutti i tag dei post
+  .path('posts').map()                 // Tutti i post con quei tag
+  .path('replies').map()               // Tutte le risposte
+  .path('author');                     // Autori delle risposte
+```
+
+#### Vantaggi
+
+- **Navigazione efficiente**: Puoi navigare il grafo in entrambe le direzioni
+- **Query più veloci**: Accesso diretto alle relazioni senza dover cercare
+- **Consistenza**: I riferimenti sono mantenuti automaticamente
+- **Pattern GUN standard**: Segue le best practice di GUN per i grafi sociali
 
 ## Estensioni Future
 

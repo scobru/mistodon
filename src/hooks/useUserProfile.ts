@@ -55,13 +55,13 @@ export function useUserProfile(userPub?: string): UseUserProfileReturn {
       let hasLoaded = false;
       let timeoutId: NodeJS.Timeout;
       
+      // Track last processed profile to avoid duplicate updates
+      let lastProcessedProfile: string | null = null;
+      
       // Helper function to process profile data
       const processProfileData = (data: any, source: string) => {
-        console.log(`[Profile] Processing data from ${source}:`, data);
-        
         // Check if data exists and is an object
         if (!data || typeof data !== 'object') {
-          console.log(`[Profile] Invalid data from ${source}: not an object`);
           return null;
         }
         
@@ -69,7 +69,6 @@ export function useUserProfile(userPub?: string): UseUserProfileReturn {
         // Check if object has any properties besides _
         const keys = Object.keys(data).filter(key => key !== '_');
         if (keys.length === 0) {
-          console.log(`[Profile] Invalid data from ${source}: only _ property`);
           return null;
         }
         
@@ -84,44 +83,83 @@ export function useUserProfile(userPub?: string): UseUserProfileReturn {
             avatar: profileData.avatar,
             createdAt: profileData.createdAt,
           } as UserProfile;
-          console.log(`[Profile] Valid profile from ${source}:`, processed);
+          
+          // Create a hash to detect duplicates
+          const profileHash = JSON.stringify(processed);
+          if (lastProcessedProfile === profileHash) {
+            return null; // Skip duplicate
+          }
+          lastProcessedProfile = profileHash;
+          
           return processed;
         }
-        console.log(`[Profile] No valid fields from ${source}`);
         return null;
       };
       
       // Use on() for both initial load and updates - GunDB is eventually consistent
       // This ensures we get data even if it arrives after the initial load
+      // Add debouncing to prevent too many updates
+      let updateTimer: NodeJS.Timeout | null = null;
       const handleProfileData = (data: any, source: string) => {
         const processed = processProfileData(data, source);
         if (processed) {
-          if (!hasLoaded) {
-            hasLoaded = true;
-            if (timeoutId) {
-              clearTimeout(timeoutId);
-            }
-            console.log(`[Profile] Profile loaded from ${source}`);
+          // Clear any pending updates
+          if (updateTimer) {
+            clearTimeout(updateTimer);
           }
-          setProfile(processed);
-          setLoading(false);
+          
+          // Debounce the update to avoid rapid state changes
+          updateTimer = setTimeout(() => {
+            if (!hasLoaded) {
+              hasLoaded = true;
+              if (timeoutId) {
+                clearTimeout(timeoutId);
+              }
+              console.log(`[Profile] Profile loaded from ${source}`);
+            }
+            setProfile(processed);
+            setLoading(false);
+            updateTimer = null;
+          }, 100); // 100ms debounce
         }
       };
 
-      // Listen to public path
-      console.log(`[Profile] Setting up listener for public path: users/${targetUserPub}/profile`);
-      const publicListener = publicProfileNode.on((data: any) => {
-        handleProfileData(data, 'public');
+      // Listen to public path - use once() first to avoid duplicate calls
+      let publicDataReceived = false;
+      publicProfileNode.once((data: any) => {
+        if (!publicDataReceived) {
+          publicDataReceived = true;
+          handleProfileData(data, 'public');
+        }
       });
       
-      // Also listen to user space if available
+      // Then set up listener for updates (only after initial load)
+      const publicListener = publicProfileNode.on((data: any) => {
+        if (publicDataReceived) { // Only process updates after initial load
+          handleProfileData(data, 'public');
+        }
+      });
+      
+      // Also listen to user space if available - but only if public didn't have data
       let userSpaceListener: (() => void) | null = null;
+      let userSpaceDataReceived = false;
       if (userSpaceNode) {
-        console.log(`[Profile] Setting up listener for user space: user.get('profile')`);
-        userSpaceNode.on((data: any) => {
-          handleProfileData(data, 'userSpace');
+        userSpaceNode.once((data: any) => {
+          if (!publicDataReceived && !userSpaceDataReceived) {
+            userSpaceDataReceived = true;
+            handleProfileData(data, 'userSpace');
+          }
         });
-        userSpaceListener = () => userSpaceNode!.off();
+        
+        userSpaceNode.on((data: any) => {
+          if (userSpaceDataReceived && !publicDataReceived) {
+            handleProfileData(data, 'userSpace');
+          }
+        });
+        
+        userSpaceListener = () => {
+          userSpaceNode!.off();
+        };
       }
       
       // Timeout fallback - if no data after 8 seconds, assume no profile exists
@@ -138,6 +176,9 @@ export function useUserProfile(userPub?: string): UseUserProfileReturn {
       return () => {
         try {
           clearTimeout(timeoutId);
+          if (updateTimer) {
+            clearTimeout(updateTimer);
+          }
           publicProfileNode.off();
           if (userSpaceListener) {
             userSpaceListener();

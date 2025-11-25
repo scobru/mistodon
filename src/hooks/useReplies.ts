@@ -24,108 +24,73 @@ export function useReplies(postId: string): UseRepliesReturn {
 
     setLoading(true);
     const gun = shogunCore.gun;
-    const repliesNode = gun.get('posts').get(postId).get('replies');
+    const appName = 'shogun-mistodon-clone-v1';
+    // Read replies from app posts node (using bidirectional references)
+    const repliesNode = gun.get(appName).get('posts').get(postId).get('replies');
     const repliesMap: Map<string, Post> = new Map();
     const listeners = new Map<string, any>(); // Track individual post listeners
 
-    // Listen for reply IDs
-    const mainListener = repliesNode.map().on((data: any, replyId: string) => {
-      if (!replyId || replyId.startsWith('_')) {
+    const loadReplyFromHash = (replyHash: string) => {
+      // Get soul from #posts using hash
+      gun.get('#posts').get(replyHash).once((replySoul: string) => {
+        if (replySoul && typeof replySoul === 'string') {
+          // Get the actual reply data using the soul (content-addressed)
+          gun.get(replySoul).once((replyData: any) => {
+            if (!replyData || typeof replyData !== 'object') {
+              return;
+            }
+
+            const { _, ...replyPostData } = replyData;
+            const replyTimestamp = replyPostData.timestamp || Date.now();
+
+            // Content-addressed format uses authorPub/text
+            const replyAuthor = replyPostData.authorPub || replyPostData.author || '';
+            const replyContent = replyPostData.text || replyPostData.content || '';
+
+            if (replyAuthor && replyContent) {
+              const reply: Post = {
+                id: replyHash,
+                author: replyAuthor,
+                content: replyContent,
+                timestamp: replyTimestamp,
+                likes: replyPostData.likes || {},
+                reposts: replyPostData.reposts || {},
+                replyTo: replyPostData.replyTo || postId,
+              };
+
+              repliesMap.set(replyHash, reply);
+              
+              const repliesArray = Array.from(repliesMap.values()).sort(
+                (a, b) => a.timestamp - b.timestamp
+              );
+              
+              setReplies(repliesArray);
+              setLoading(false);
+            }
+          });
+        }
+      });
+    };
+
+    // Listen for reply entries (content-addressed - contains hash explicitly)
+    repliesNode.map().on((replyEntry: any, key: string) => {
+      if (!key || key.startsWith('_')) {
         return;
       }
 
-      // Get the actual reply post with real-time updates
-      // Use once() first to get complete data, then on() for updates
-      gun.get('posts').get(replyId).once((replyData: any) => {
-        if (!replyData || typeof replyData !== 'object') {
-          return;
-        }
-
-        const { _, ...replyPostData } = replyData;
-
-        // Extract timestamp from ID if missing
-        let replyTimestamp = replyPostData.timestamp;
-        if (!replyTimestamp && replyId) {
-          const idParts = replyId.split('_');
-          if (idParts.length >= 2 && idParts[0] === 'post') {
-            const extractedTimestamp = parseInt(idParts[1]);
-            if (!isNaN(extractedTimestamp)) {
-              replyTimestamp = extractedTimestamp;
-            }
-          }
-        }
-        if (!replyTimestamp) {
-          replyTimestamp = Date.now();
-        }
-
-        if (replyPostData.author && replyPostData.content) {
-          const reply: Post = {
-            id: replyId,
-            author: replyPostData.author,
-            content: replyPostData.content,
-            timestamp: replyTimestamp,
-            likes: replyPostData.likes || {},
-            reposts: replyPostData.reposts || {},
-            replyTo: replyPostData.replyTo,
-          };
-
-          repliesMap.set(replyId, reply);
-          
-          const repliesArray = Array.from(repliesMap.values()).sort(
-            (a, b) => a.timestamp - b.timestamp
-          );
-          
-          setReplies(repliesArray);
-          setLoading(false);
-        }
-      });
-
-      // Also listen for updates
-      const updateListener = gun.get('posts').get(replyId).on((replyData: any) => {
-        if (!replyData || typeof replyData !== 'object' || replyData._) {
-          return;
-        }
-
-        const { _, ...replyPostData } = replyData;
-
-        // Extract timestamp from ID if missing
-        let replyTimestamp = replyPostData.timestamp;
-        if (!replyTimestamp && replyId) {
-          const idParts = replyId.split('_');
-          if (idParts.length >= 2 && idParts[0] === 'post') {
-            const extractedTimestamp = parseInt(idParts[1]);
-            if (!isNaN(extractedTimestamp)) {
-              replyTimestamp = extractedTimestamp;
-            }
-          }
-        }
-        if (!replyTimestamp) {
-          replyTimestamp = Date.now();
-        }
-
-        if (replyPostData.author && replyPostData.content) {
-          const reply: Post = {
-            id: replyId,
-            author: replyPostData.author,
-            content: replyPostData.content,
-            timestamp: replyTimestamp,
-            likes: replyPostData.likes || {},
-            reposts: replyPostData.reposts || {},
-            replyTo: replyPostData.replyTo,
-          };
-
-          repliesMap.set(replyId, reply);
-          
-          const repliesArray = Array.from(repliesMap.values()).sort(
-            (a, b) => a.timestamp - b.timestamp
-          );
-          
-          setReplies(repliesArray);
-        }
-      });
-
-      // Store listener for cleanup
-      listeners.set(replyId, updateListener);
+      let replyHash: string | null = null;
+      
+      // Check if entry contains hash explicitly
+      if (replyEntry && typeof replyEntry === 'object' && replyEntry.hash) {
+        replyHash = replyEntry.hash;
+      } else if (key.length > 20) {
+        // key might be the hash itself
+        replyHash = key;
+      }
+      
+      if (replyHash) {
+        loadReplyFromHash(replyHash);
+      }
     });
 
     setTimeout(() => {
@@ -138,13 +103,8 @@ export function useReplies(postId: string): UseRepliesReturn {
         // Clean up main listener
         repliesNode.map().off();
         // Clean up individual post listeners
-        listeners.forEach((listener, replyId) => {
-          try {
-            gun.get('posts').get(replyId).off();
-          } catch (e) {
-            console.error(`Error cleaning up listener for reply ${replyId}:`, e);
-          }
-        });
+        // Cleanup is handled by the main listener
+        // Individual reply listeners use souls which are managed by GunDB
         listeners.clear();
       } catch (e) {
         console.error('Error cleaning up replies listeners:', e);

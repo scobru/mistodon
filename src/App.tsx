@@ -16,7 +16,7 @@ import {
 import { shogunConnector } from "shogun-button-react";
 import type { ShogunCore } from "shogun-core";
 import Gun from "gun";
-import "gun/sea";
+import SEA from "gun/sea";
 import { ThemeToggle } from "./components/ui/ThemeToggle";
 import { Timeline } from "./components/Timeline";
 import { UserProfile } from "./components/UserProfile";
@@ -286,6 +286,8 @@ function App() {
         wire: true,
         axe: true,
       });
+
+      (gun as any).SEA = SEA;
 
       const { core: shogunCore } = await shogunConnector({
         appName: "Mistodon",

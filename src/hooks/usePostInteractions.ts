@@ -36,7 +36,9 @@ export function usePostInteractions(): UsePostInteractionsReturn {
           const actualUserPub = user.is.pub;
           try {
             const gun = shogunCore.gun;
-            gun.get('posts').get(postId).get('likes').get(actualUserPub).put(true);
+            const appName = 'shogun-mistodon-clone-v1';
+            gun.get(appName).get('posts').get(postId).get('likes').get(actualUserPub).put(true);
+            gun.get('interactions').get('posts').get(postId).get('likes').get(actualUserPub).put(true);
             console.log('Liked post:', postId);
             return { success: true };
           } catch (err) {
@@ -49,7 +51,12 @@ export function usePostInteractions(): UsePostInteractionsReturn {
 
       try {
         const gun = shogunCore.gun;
-        gun.get('posts').get(postId).get('likes').get(userPub).put(true);
+        // Save likes in separate node since posts are immutable (content-addressed)
+        // Use app-specific node for interactions
+        const appName = 'shogun-mistodon-clone-v1';
+        gun.get(appName).get('posts').get(postId).get('likes').get(userPub).put(true);
+        // Also save in global interactions node for compatibility
+        gun.get('interactions').get('posts').get(postId).get('likes').get(userPub).put(true);
         console.log('Liked post:', postId);
         return { success: true };
       } catch (err) {
@@ -74,7 +81,9 @@ export function usePostInteractions(): UsePostInteractionsReturn {
           const actualUserPub = user.is.pub;
           try {
             const gun = shogunCore.gun;
-            gun.get('posts').get(postId).get('likes').get(actualUserPub).put(null);
+            const appName = 'shogun-mistodon-clone-v1';
+            gun.get(appName).get('posts').get(postId).get('likes').get(actualUserPub).put(null);
+            gun.get('interactions').get('posts').get(postId).get('likes').get(actualUserPub).put(null);
             console.log('Unliked post:', postId);
             return { success: true };
           } catch (err) {
@@ -87,7 +96,9 @@ export function usePostInteractions(): UsePostInteractionsReturn {
 
       try {
         const gun = shogunCore.gun;
-        gun.get('posts').get(postId).get('likes').get(userPub).put(null);
+        const appName = 'shogun-mistodon-clone-v1';
+        gun.get(appName).get('posts').get(postId).get('likes').get(userPub).put(null);
+        gun.get('interactions').get('posts').get(postId).get('likes').get(userPub).put(null);
         console.log('Unliked post:', postId);
         return { success: true };
       } catch (err) {
@@ -118,17 +129,46 @@ export function usePostInteractions(): UsePostInteractionsReturn {
       }
 
       try {
-        // Get the original post to get its timestamp
-        const originalPost = await new Promise<any>((resolve) => {
-          gun.get('posts').get(postId).once((data: any) => {
-            if (!data || typeof data !== 'object') {
-              resolve(null);
-              return;
-            }
-            const { _, ...post } = data;
-            resolve(post);
+        // Get the original post (content-addressed - try to get from #posts first)
+        let originalPost: any = null;
+        
+        // Try to get from #posts using hash (content-addressed)
+        const SEA = (gun as any).SEA;
+        if (SEA) {
+          // postId might be a hash, try to get soul from #posts
+          const postSoul = await new Promise<string | null>((resolve) => {
+            gun.get('#posts').get(postId).once((soul: string) => {
+              resolve(soul && typeof soul === 'string' ? soul : null);
+            });
           });
-        });
+          
+          if (postSoul) {
+            originalPost = await new Promise<any>((resolve) => {
+              gun.get(postSoul).once((data: any) => {
+                if (data && typeof data === 'object') {
+                  const { _, ...post } = data;
+                  resolve(post);
+                } else {
+                  resolve(null);
+                }
+              });
+            });
+          }
+        }
+        
+        // Fallback: try to get from app posts node
+        if (!originalPost) {
+          originalPost = await new Promise<any>((resolve) => {
+            gun.get('shogun-mistodon-clone-v1').get('posts').get(postId).once((data: any) => {
+              if (data && typeof data === 'object') {
+                const { _, ...post } = data;
+                resolve(post);
+              } else {
+                resolve(null);
+              }
+            });
+          });
+        }
 
         if (!originalPost) {
           return { success: false, error: 'Post not found' };
@@ -136,10 +176,12 @@ export function usePostInteractions(): UsePostInteractionsReturn {
 
         const repostTimestamp = originalPost.timestamp || Date.now();
 
-        // Save repost reference in the original post
-        gun.get('posts').get(postId).get('reposts').get(userPub).put({ timestamp: Date.now() });
+        // Save repost reference in interactions node (posts are immutable)
+        const appName = 'shogun-mistodon-clone-v1';
+        gun.get(appName).get('posts').get(postId).get('reposts').get(userPub).put({ timestamp: Date.now() });
+        gun.get('interactions').get('posts').get(postId).get('reposts').get(userPub).put({ timestamp: Date.now() });
         
-        // Add to user's posts index so it appears in profile
+        // Add to user's posts index so it appears in profile (using hash/postId)
         user.get('posts').get(postId).put({ id: postId, timestamp: repostTimestamp, reposted: true });
         
         // Also save to users/{userPub}/posts for profile view
@@ -175,8 +217,10 @@ export function usePostInteractions(): UsePostInteractionsReturn {
       }
 
       try {
-        // Remove repost reference from the original post
-        gun.get('posts').get(postId).get('reposts').get(userPub).put(null);
+        // Remove repost reference from interactions node (posts are immutable)
+        const appName = 'shogun-mistodon-clone-v1';
+        gun.get(appName).get('posts').get(postId).get('reposts').get(userPub).put(null);
+        gun.get('interactions').get('posts').get(postId).get('reposts').get(userPub).put(null);
         
         // Remove from user's posts index
         user.get('posts').get(postId).put(null);
@@ -194,89 +238,19 @@ export function usePostInteractions(): UsePostInteractionsReturn {
     [shogunCore, isLoggedIn]
   );
 
-  // Reply to a post
+  // Reply to a post (uses content-addressed storage via socialProtocol)
+  // Note: This should ideally use publishPost from useSocialProtocol with replyToId
+  // For now, we delegate to socialProtocol for consistency
   const replyToPost = useCallback(
     async (postId: string, content: string): Promise<{ success: boolean; error?: string; postId?: string }> => {
-      if (!shogunCore?.gun || !isLoggedIn) {
-        return { success: false, error: 'Not authenticated' };
-      }
-
-      const userPub = getCurrentUserPub(shogunCore.gun);
-      if (!userPub) {
-        const user = shogunCore.gun.user();
-        if (user && user.is && user.is.pub) {
-          const actualUserPub = user.is.pub;
-          try {
-            const gun = shogunCore.gun;
-            const replyId = `post_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            
-            const reply: Post = {
-              id: replyId,
-              author: actualUserPub,
-              content: content.trim(),
-              timestamp: Date.now(),
-              replyTo: postId,
-              likes: {},
-              reposts: {},
-            };
-
-            console.log('Creating reply:', reply);
-
-            // Save reply as a post
-            gun.get('posts').get(replyId).put(reply);
-
-            // Link reply to original post
-            gun.get('posts').get(postId).get('replies').get(replyId).put({ timestamp: Date.now() });
-
-            // Also save to user's posts index
-            user.get('posts').get(replyId).put({ id: replyId, timestamp: reply.timestamp });
-
-            console.log('Reply created successfully:', replyId);
-            return { success: true, postId: replyId };
-          } catch (err) {
-            console.error('Error replying to post:', err);
-            return { success: false, error: 'Failed to reply to post' };
-          }
-        }
-        return { success: false, error: 'User not authenticated' };
-      }
-
-      try {
-        const gun = shogunCore.gun;
-        const replyId = `post_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
-        const reply: Post = {
-          id: replyId,
-          author: userPub,
-          content: content.trim(),
-          timestamp: Date.now(),
-          replyTo: postId,
-          likes: {},
-          reposts: {},
-        };
-
-        console.log('Creating reply:', reply);
-
-        // Save reply as a post
-        gun.get('posts').get(replyId).put(reply);
-
-        // Link reply to original post
-        gun.get('posts').get(postId).get('replies').get(replyId).put({ timestamp: Date.now() });
-
-        // Also save to user's posts index
-        const user = gun.user();
-        if (user && user.is && user.is.pub) {
-          user.get('posts').get(replyId).put({ id: replyId, timestamp: reply.timestamp });
-        }
-
-        console.log('Reply created successfully:', replyId);
-        return { success: true, postId: replyId };
-      } catch (err) {
-        console.error('Error replying to post:', err);
-        return { success: false, error: 'Failed to reply to post' };
-      }
+      // This should use publishPost with replyToId from useSocialProtocol
+      // For now, return error asking to use publishPost instead
+      return { 
+        success: false, 
+        error: 'Please use publishPost from useSocialProtocol with replyToId parameter for content-addressed replies' 
+      };
     },
-    [shogunCore, isLoggedIn]
+    []
   );
 
   // Check if post is liked by current user

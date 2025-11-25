@@ -28,6 +28,12 @@ export interface UseSocialProtocolReturn {
   getUserProfile: (userPub: string) => Promise<UserProfile>;
   updateProfile: (profileData: Partial<UserProfile>) => Promise<void>;
   deletePost: (postId: string) => Promise<{ success: boolean; error?: string }>;
+  // New bidirectional navigation methods (GUN Design Pattern)
+  getUserPosts: (userPub: string, callback: (post: PostWithAuthor) => void) => () => void;
+  getPostTags: (postId: string, callback: (tag: { name: string; slug: string }) => void) => () => void;
+  getTagPosts: (tagSlug: string, callback: (post: PostWithAuthor) => void) => () => void;
+  getPostAuthor: (postId: string, callback: (profile: UserProfile) => void) => void;
+  getParentPost: (replyId: string, callback: (post: PostWithAuthor) => void) => void;
 }
 
 /**
@@ -160,14 +166,16 @@ export function useSocialProtocol(): UseSocialProtocolReturn {
 
       postsMap.set(postId, postWithInteractions);
       
-      // Set up real-time listeners for likes and reposts
+      // Set up real-time listeners for likes and reposts (from interactions node since posts are immutable)
       const currentShogunCore = shogunCoreRef.current;
       if (currentShogunCore?.gun) {
         const gun = currentShogunCore.gun;
-        const postNode = gun.get('posts').get(postId);
+        const appName = 'shogun-mistodon-clone-v1';
+        // Read likes from interactions node (posts are immutable)
+        const likesNode = gun.get(appName).get('posts').get(postId).get('likes');
         
         // Listen for likes updates
-        const likesListener = postNode.get('likes').map().on((likeValue: any, likeKey: string) => {
+        likesNode.map().on((likeValue: any, likeKey: string) => {
           if (likeKey && !likeKey.startsWith('_')) {
             const currentPost = postsMap.get(postId);
             if (currentPost) {
@@ -184,14 +192,15 @@ export function useSocialProtocol(): UseSocialProtocolReturn {
         });
         listenersRef.current.set(`${postId}_likes`, () => {
           try {
-            postNode.get('likes').map().off();
+            likesNode.map().off();
           } catch (e) {
             console.error(`Error cleaning up likes listener for ${postId}:`, e);
           }
         });
 
-        // Listen for reposts updates
-        const repostsListener = postNode.get('reposts').map().on((repostValue: any, repostKey: string) => {
+        // Listen for reposts updates (from interactions node)
+        const repostsNode = gun.get(appName).get('posts').get(postId).get('reposts');
+        repostsNode.map().on((repostValue: any, repostKey: string) => {
           if (repostKey && !repostKey.startsWith('_')) {
             const currentPost = postsMap.get(postId);
             if (currentPost) {
@@ -208,7 +217,7 @@ export function useSocialProtocol(): UseSocialProtocolReturn {
         });
         listenersRef.current.set(`${postId}_reposts`, () => {
           try {
-            postNode.get('reposts').map().off();
+            repostsNode.map().off();
           } catch (e) {
             console.error(`Error cleaning up reposts listener for ${postId}:`, e);
           }
@@ -275,14 +284,15 @@ export function useSocialProtocol(): UseSocialProtocolReturn {
 
       postsMap.set(postId, postWithInteractions);
       
-      // Set up real-time listeners for likes and reposts (same as global)
+      // Set up real-time listeners for likes and reposts (from interactions node)
       const currentShogunCore = shogunCoreRef.current;
       if (currentShogunCore?.gun) {
         const gun = currentShogunCore.gun;
-        const postNode = gun.get('posts').get(postId);
+        const appName = 'shogun-mistodon-clone-v1';
+        const likesNode = gun.get(appName).get('posts').get(postId).get('likes');
         
         // Listen for likes updates
-        postNode.get('likes').map().on((likeValue: any, likeKey: string) => {
+        likesNode.map().on((likeValue: any, likeKey: string) => {
           if (likeKey && !likeKey.startsWith('_')) {
             const currentPost = postsMap.get(postId);
             if (currentPost) {
@@ -298,8 +308,9 @@ export function useSocialProtocol(): UseSocialProtocolReturn {
           }
         });
 
-        // Listen for reposts updates
-        postNode.get('reposts').map().on((repostValue: any, repostKey: string) => {
+        // Listen for reposts updates (from interactions node)
+        const repostsNode = gun.get(appName).get('posts').get(postId).get('reposts');
+        repostsNode.map().on((repostValue: any, repostKey: string) => {
           if (repostKey && !repostKey.startsWith('_')) {
             const currentPost = postsMap.get(postId);
             if (currentPost) {
@@ -464,6 +475,71 @@ export function useSocialProtocol(): UseSocialProtocolReturn {
     [socialNetwork]
   );
 
+  // Get all posts by a specific user (using bidirectional references)
+  const getUserPosts = useCallback(
+    (userPub: string, callback: (post: PostWithAuthor) => void): (() => void) => {
+      if (!socialNetwork) {
+        setError('SocialNetwork not initialized');
+        return () => {};
+      }
+
+      return socialNetwork.getUserPosts(userPub, callback);
+    },
+    [socialNetwork]
+  );
+
+  // Get all tags for a specific post (using bidirectional references)
+  const getPostTags = useCallback(
+    (postId: string, callback: (tag: { name: string; slug: string }) => void): (() => void) => {
+      if (!socialNetwork) {
+        setError('SocialNetwork not initialized');
+        return () => {};
+      }
+
+      return socialNetwork.getPostTags(postId, callback);
+    },
+    [socialNetwork]
+  );
+
+  // Get all posts with a specific tag (using bidirectional references)
+  const getTagPosts = useCallback(
+    (tagSlug: string, callback: (post: PostWithAuthor) => void): (() => void) => {
+      if (!socialNetwork) {
+        setError('SocialNetwork not initialized');
+        return () => {};
+      }
+
+      return socialNetwork.getTagPosts(tagSlug, callback);
+    },
+    [socialNetwork]
+  );
+
+  // Get the author of a post (using bidirectional references)
+  const getPostAuthor = useCallback(
+    (postId: string, callback: (profile: UserProfile) => void): void => {
+      if (!socialNetwork) {
+        setError('SocialNetwork not initialized');
+        return;
+      }
+
+      socialNetwork.getPostAuthor(postId, callback);
+    },
+    [socialNetwork]
+  );
+
+  // Get parent post of a reply (using bidirectional references)
+  const getParentPost = useCallback(
+    (replyId: string, callback: (post: PostWithAuthor) => void): void => {
+      if (!socialNetwork) {
+        setError('SocialNetwork not initialized');
+        return;
+      }
+
+      socialNetwork.getParentPost(replyId, callback);
+    },
+    [socialNetwork]
+  );
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -500,6 +576,12 @@ export function useSocialProtocol(): UseSocialProtocolReturn {
     getUserProfile,
     updateProfile,
     deletePost,
+    // New bidirectional navigation methods
+    getUserPosts,
+    getPostTags,
+    getTagPosts,
+    getPostAuthor,
+    getParentPost,
   };
 }
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useShogun } from 'shogun-button-react';
 import { usePostInteractions } from '../hooks/usePostInteractions';
@@ -17,23 +17,59 @@ interface PostCardProps {
 export const PostCard: React.FC<PostCardProps> = ({ post, onReply, onDelete }) => {
   const { userPub: currentUserPub } = useShogun();
   const location = useLocation();
-  // Use authorProfile from post if available, otherwise load it
+  const { deletePost, getPostTags, getPostAuthor } = useSocialProtocol();
+  
+  // Use authorProfile from post if available, otherwise try to load it using bidirectional reference
   const { profile: loadedProfile, loading: profileLoading } = useUserProfile(
     post.authorProfile ? undefined : post.author
   );
-  const profile = post.authorProfile || loadedProfile;
-  const { deletePost } = useSocialProtocol();
+  
+  // Also try to get author using bidirectional reference if we have postId but no profile
+  const [authorProfileFromRef, setAuthorProfileFromRef] = useState<typeof loadedProfile | null>(null);
+  
+  React.useEffect(() => {
+    if (!post.authorProfile && post.id && !loadedProfile) {
+      getPostAuthor(post.id, (profile) => {
+        setAuthorProfileFromRef({
+          username: profile.displayName,
+          avatar: profile.avatarCid || undefined,
+          bio: profile.bio,
+        });
+      });
+    }
+  }, [post.id, post.authorProfile, loadedProfile, getPostAuthor]);
+  
+  const profile = post.authorProfile || authorProfileFromRef || loadedProfile;
   const {
     likePost,
     unlikePost,
     repost,
     unrepost,
-    replyToPost,
     isLiked,
     isReposted,
     getLikeCount,
     getRepostCount,
   } = usePostInteractions();
+  const { publishPost } = useSocialProtocol();
+  
+  // Get tags for this post using bidirectional references
+  const [postTags, setPostTags] = useState<Array<{ name: string; slug: string }>>([]);
+  
+  useEffect(() => {
+    if (!post.id) return;
+    
+    const cleanup = getPostTags(post.id, (tag) => {
+      setPostTags((prev) => {
+        // Avoid duplicates
+        if (prev.some(t => t.slug === tag.slug)) {
+          return prev;
+        }
+        return [...prev, tag];
+      });
+    });
+    
+    return cleanup;
+  }, [post.id, getPostTags]);
 
   const [isLiking, setIsLiking] = useState(false);
   const [isReposting, setIsReposting] = useState(false);
@@ -100,11 +136,12 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onReply, onDelete }) =
 
     setIsReplying(true);
     console.log('Replying to post:', post.id, 'with content:', replyContent);
-    const result = await replyToPost(post.id, replyContent);
+    // Use publishPost with replyToId for content-addressed replies
+    const result = await publishPost(replyContent, null, post.id);
     setIsReplying(false);
 
     if (result.success) {
-      console.log('Reply created successfully:', result.postId);
+      console.log('Reply created successfully:', result.id);
       setReplyContent('');
       setShowReplyForm(false);
       // Force a small delay to let GunDB sync
@@ -183,14 +220,18 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onReply, onDelete }) =
                 {displayName}
               </Link>
               <Link
-                to={`/post/${post.id}`}
+                to={`/post/${encodeURIComponent(post.id)}`}
                 className="text-shogun-secondary text-sm hover:underline flex items-center gap-1"
                 title="View post"
+                onClick={(e) => {
+                  // Ensure navigation happens
+                  e.stopPropagation();
+                }}
               >
                 {formatRelativeTime(post.timestamp)}
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-3 w-3 opacity-50"
+                  className="h-3 w-3 opacity-50 pointer-events-none"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -264,6 +305,21 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onReply, onDelete }) =
           <div className="mb-4 whitespace-pre-wrap break-words">
             {post.content}
           </div>
+
+          {/* Post Tags (from bidirectional references) */}
+          {postTags.length > 0 && (
+            <div className="mb-4 flex flex-wrap gap-2">
+              {postTags.map((tag) => (
+                <Link
+                  key={tag.slug}
+                  to={`/hashtag/${tag.slug}`}
+                  className="badge badge-primary badge-sm hover:badge-secondary transition-colors"
+                >
+                  #{tag.name}
+                </Link>
+              ))}
+            </div>
+          )}
 
           {/* Media/Image */}
           {post.media && (
@@ -441,10 +497,8 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onReply, onDelete }) =
             </form>
           )}
 
-          {/* Replies - Only show for non-reply posts to avoid infinite nesting */}
-          {!post.replyTo && (
-            <RepliesSection postId={post.id} onReply={onReply} />
-          )}
+          {/* Replies - Show for all posts, with depth limit to avoid infinite nesting */}
+          <RepliesSection postId={post.id} onReply={onReply} maxDepth={3} currentDepth={0} />
         </div>
       </div>
     </div>
@@ -452,25 +506,55 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onReply, onDelete }) =
 };
 
 // Separate component for replies to avoid circular dependency
-const RepliesSection: React.FC<{ postId: string; onReply?: () => void }> = ({ postId, onReply }) => {
+// Supports nested replies with depth limit
+const RepliesSection: React.FC<{ 
+  postId: string; 
+  onReply?: () => void;
+  maxDepth?: number;
+  currentDepth?: number;
+}> = ({ postId, onReply, maxDepth = 3, currentDepth = 0 }) => {
   const { replies, loading: repliesLoading } = useReplies(postId);
 
-  if (repliesLoading) {
-    return null;
+  // Don't hide while loading - show a loading indicator instead
+  if (repliesLoading && replies.length === 0) {
+    return (
+      <div className="mt-4 pt-4 border-t border-base-300">
+        <span className="text-xs text-shogun-secondary">Loading replies...</span>
+      </div>
+    );
   }
 
   if (replies.length === 0) {
     return null;
   }
 
+  // Limit nesting depth to avoid infinite recursion
+  const shouldShowNestedReplies = currentDepth < maxDepth;
+  const nextDepth = currentDepth + 1;
+
   return (
-    <div className="mt-4 pt-4 border-t border-base-300">
+    <div className={`mt-4 pt-4 border-t border-base-300 ${currentDepth > 0 ? 'ml-4 opacity-90' : ''}`}>
       <h4 className="text-sm font-semibold mb-3 text-shogun-secondary">
         {replies.length} {replies.length === 1 ? 'Reply' : 'Replies'}
       </h4>
       <div className="space-y-3">
         {replies.map((reply) => (
-          <PostCard key={reply.id} post={reply} onReply={onReply} onDelete={onReply} />
+          <div key={reply.id}>
+            <PostCard 
+              post={reply} 
+              onReply={onReply} 
+              onDelete={onReply}
+            />
+            {/* Show nested replies if within depth limit */}
+            {shouldShowNestedReplies && (
+              <RepliesSection 
+                postId={reply.id} 
+                onReply={onReply} 
+                maxDepth={maxDepth}
+                currentDepth={nextDepth}
+              />
+            )}
+          </div>
         ))}
       </div>
     </div>
