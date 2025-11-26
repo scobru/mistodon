@@ -221,7 +221,6 @@ export class SocialNetwork {
               };
               this._indexHashtags(text, postPayload, postNode);
               
-              console.log('Post pubblicato (immutabile):', { soul: postSoul, hash: postHash });
               resolve({ success: true, id: postHash, hash: postHash });
             } catch (hashError) {
               console.error('Error creating hash:', hashError);
@@ -618,8 +617,6 @@ export class SocialNetwork {
         return { success: false, error: 'Post not found. Please try again or refresh the page.' };
       }
       
-      console.log('Post found with soul:', postSoul, 'postId:', postId);
-
       // Get the actual post data using the soul
       postData = await new Promise<any>((resolve) => {
         this.gun.get(postSoul).once((data: any) => {
@@ -704,7 +701,6 @@ export class SocialNetwork {
 
       // Remove bidirectional Reply ↔ Parent references (if it's a reply)
       if (postData.replyTo) {
-        console.log('Removing reply from parent post:', postData.replyTo, 'replyId:', postId);
         const parentPostNode = this.gun.get(this.appName).get('posts').get(postData.replyTo);
         
         // Remove the explicit hash entry (this is the main way replies are stored)
@@ -732,7 +728,6 @@ export class SocialNetwork {
         
         // Remove the replyTo reference from this post
         postNode.get('replyTo').put(null);
-        console.log('Reply removed from parent post references');
       }
 
       // Remove all replies to this post
@@ -794,7 +789,6 @@ export class SocialNetwork {
       // Wait a bit to let GunDB sync the deletions
       await new Promise(resolve => setTimeout(resolve, 200));
       
-      console.log('Post deleted:', postId, 'isReply:', !!postData.replyTo);
       return { success: true };
     } catch (error) {
       console.error('Error deleting post:', error);
